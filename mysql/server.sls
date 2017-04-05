@@ -24,8 +24,8 @@ mysql_debconf:
   debconf.set:
     - name: {{ mysql.server }}
     - data:
-        '{{ mysql.server }}/root_password': {'type': 'password', 'value': '{{ mysql_root_password }}'}
-        '{{ mysql.server }}/root_password_again': {'type': 'password', 'value': '{{ mysql_root_password }}'}
+        'mysql-server/root_password': {'type': 'password', 'value': '{{ mysql_root_password }}'}
+        'mysql-server/root_password_again': {'type': 'password', 'value': '{{ mysql_root_password }}'}
         '{{ mysql.server }}/start_on_boot': {'type': 'boolean', 'value': 'true'}
     - require_in:
       - pkg: {{ mysql.server }}
@@ -56,6 +56,9 @@ mysql_delete_anonymous_user_{{ host }}:
       - pkg: mysql_python
       {%- if (mysql_salt_user == mysql_root_user) and mysql_root_password %}
       - cmd: mysql_root_password
+      {%- endif %}
+      {%- if (mysql_salt_user != mysql_root_user) %}
+      - sls: mysql.salt-user
       {%- endif %}
 {% endfor %}
 {% endif %}
@@ -88,12 +91,36 @@ mysqld-packages:
     - require:
       - debconf: mysql_debconf
 {% endif %}
+    - require_in:
+      - file: mysql_config
 
-{% if os_family in ['RedHat', 'Suse'] and mysql.version is defined and mysql.version >= 5.7 %}
+{% if os_family in ['RedHat', 'Suse'] and mysql.version is defined and mysql.version >= 5.7 and mysql.server != 'mariadb-server' %}
 # Initialize mysql database with --initialize-insecure option before starting service so we don't get locked out.
 mysql_initialize:
   cmd.run:
     - name: mysqld --initialize-insecure --user=mysql --basedir=/usr --datadir={{ mysql_datadir }}
+    - user: root
+    - creates: {{ mysql_datadir}}/mysql/
+    - require:
+      - pkg: {{ mysql.server }}
+{% endif %}
+
+{% if os_family in ['RedHat', 'Suse'] and mysql.server == 'mariadb-server' %}
+# For MariaDB it's enough to only create the datadir
+mysql_initialize:
+  file.directory:
+    - name: {{ mysql_datadir }}
+    - user: mysql
+    - group: mysql
+    - makedirs: True
+    - require:
+      - pkg: {{ mysql.server }}
+{% endif %}
+
+{% if os_family in ['Gentoo'] %}
+mysql_initialize:
+  cmd.run:
+    - name: emerge --config {{ mysql.server }}
     - user: root
     - creates: {{ mysql_datadir}}/mysql/
     - require:
@@ -106,8 +133,10 @@ mysqld:
     - enable: True
     - require:
       - pkg: {{ mysql.server }}
-{% if os_family in ['RedHat', 'Suse'] and mysql.version is defined and mysql.version >= 5.7 %}
+{% if (os_family in ['RedHat', 'Suse'] and mysql.version is defined and mysql.version >= 5.7 and mysql.server != 'mariadb-server') or (os_family in ['Gentoo']) %}
       - cmd: mysql_initialize
+{% elif os_family in ['RedHat', 'Suse'] and mysql.server == 'mariadb-server' %}
+      - file: {{ mysql_datadir }}
 {% endif %}
     - watch:
       - pkg: {{ mysql.server }}
